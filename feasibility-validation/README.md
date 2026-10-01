@@ -1,15 +1,28 @@
-# simple-computer-use —— 可行性验证
+# simple-computer-use · 可行性验证
 
-一个**不依赖任何框架**的 Windows computer-use 工具集的起点。
-所有程序都是**单个静态 exe、零运行时依赖、直接调 Win32**。
+不依赖任何框架的 Windows computer-use 工具集。每个工具都是
+**单个静态 exe、零运行时依赖、直接调 Win32**。
 
-当前阶段只做**两个可行性验证程序** —— 先把"坐标系"这件事钉死，再谈鼠标键盘。
-
-代码在 [`feasibility-validation/`](feasibility-validation) 里。
+> A from-scratch Windows computer-use toolkit — one static exe per tool,
+> no frameworks, no runtime dependencies, plain Win32.
 
 ---
 
-## ✅ 本机验证结果（已通过）
+
+## ✅ 验证结果
+
+| 工具 | 验证点 | 结果 |
+|---|---|---|
+| `screenshot.exe` | 截图尺寸 = 显示器物理分辨率 | ✅ `1920x1080` |
+| `screenshot.exe` | 多屏幕下 | ✅ 正常运行。此外，默认命令，鼠标在哪个屏幕，截图截哪个屏幕 |
+| `mousepos.exe` | `GetCursorPos` 返回物理像素 | ✅ 右下角读到 `1919, 1079` |
+| `mousepos.exe` | 多屏幕下 | ✅ 第二块屏幕返回的坐标换算正确 |
+| `move.exe`| 移动是否正常 | ✅ |
+| `click.exe`| 点击是否正常| ✅ 单击打、双击、右键全都正常|
+| `type.exe` | `SendInput` + `KEYEVENTF_UNICODE` 能输入任意 Unicode（中文 / emoji），不受键盘布局与输入法影响 | 成功 |
+| `key.exe` | 虚拟键组合键生效（修饰键状态确实进了输入队列）；退出前一定抬起所有键 | 成功 |
+| `clip.exe` | `OpenClipboard` 一族能读写 `CF_UNICODETEXT`、枚举当前所有格式 | 成功 |
+
 
 ```
 dpi awareness  : PerMonitorV2
@@ -18,88 +31,80 @@ monitor count  : 1
   [0] \\.\DISPLAY1  rect=(0,0)-(1920,1080)  1920x1080  work=(0,0)-(1920,1020)  primary=1  dpi=120 (125%)
 ```
 
-- 光标推到屏幕最右下角，`mousepos.exe` 读到 **`1919, 1079`** —— 正是物理右下角像素
-- 截出来的 `shot.png` 实际尺寸 **1920 x 1080** —— 正是该显示器的物理分辨率
+**结论：物理像素、1:1、不需要任何换算。**
 
-**结论：坐标系干净。** 物理像素、1:1、**不需要任何换算**。
-（如果 DPI 感知没生效，光标最多读到 `1535, 863`、截图也会缺一块 —— 那是被 125% 除过的假值。）
+> 若 DPI 感知没生效，光标最多读到 `1535, 863`、截图也会缺一块 ——
+> 那是被 125% 除过的"虚拟化"假坐标。
 
----
 
 ## 编译
 
-两行 `g++` 命令，见 [`feasibility-validation/编译说明.md`](feasibility-validation/编译说明.md)。
-**不需要 MSVC，不需要 Windows SDK。**
-
----
-
-## 验证 1：`screenshot.exe`
-
 ```
-screenshot.exe            # 截光标所在显示器 -> shot.png
-screenshot.exe --list     # 只列显示器
-screenshot.exe --monitor 1 --out d2.png
+g++ -std=c++17 -O2 -municode -static -o screenshot.exe screenshot.cpp -lgdiplus -lgdi32 -luser32
+g++ -std=c++17 -O2 -municode -static -o mousepos.exe  mousepos.cpp  -lgdi32 -luser32
+g++ -std=c++17 -O2 -municode -static -o move.exe      move.cpp      -lgdi32 -luser32
+g++ -std=c++17 -O2 -municode -static -o click.exe     click.cpp     -lgdi32 -luser32
+g++ -std=c++17 -O2 -municode -static -o type.exe      type.cpp      -luser32
+g++ -std=c++17 -O2 -municode -static -o key.exe       key.cpp       -luser32
+g++ -std=c++17 -O2 -municode -static -o clip.exe      clip.cpp      -luser32
 ```
 
-**看什么：**
+MinGW `g++`，**不需要 MSVC、不需要 Windows SDK**。参数逐个解释见 [编译说明.md](编译说明.md)。
 
-| 检查项 | 期望 |
+## 工具
+
+| 工具 | 作用 |
 |---|---|
-| `dpi awareness` | `PerMonitorV2` |
-| `bitmap size` | **等于该显示器的真实物理分辨率** |
-| 图片打开后的像素尺寸 | 同上（用看图工具确认一次） |
-| `virtual screen` | 和"显示设置 → 显示器"里的一致 |
-
-**如果 `bitmap size` 是 1536x864 这种数** → DPI 感知没生效，
-Windows 给了你一套被 125% 除过的假值，截图也会缺一块。
-
-**`mapping` 那一行是关键输出**：`image(x,y) == screen(左+x, 上+y)`。
-后续所有点击坐标都要靠它换算。
-
-**已知限制**：`BitBlt` 抓不到硬件加速内容（游戏、某些视频、部分 UWP）——
-那些区域会是黑的。真需要时再上 DXGI Desktop Duplication。
-加 `--layered` 可以额外抓分层窗口，但可能闪烁。
-
----
-
-## 验证 2：`mousepos.exe`
+| `screenshot.exe` | 截**单个**显示器 → PNG，并打印布局与坐标映射 |
+| `mousepos.exe` | 实时打印光标物理坐标 |
+| `move.exe` | 移动光标 + **读回验证**（防静默钳制） |
+| `click.exe` | 点击；动作前报告光标下的窗口；位置没验证通过**拒绝点击** |
+| `type.exe` | 按 `KEYEVENTF_UNICODE` 逐字符输入文本，间隔可调 |
+| `key.exe` | 发单个键或组合键，可设按住时长；退出前一定补 `KEYUP` |
+| `clip.exe` | 读写剪贴板文本，或列出当前所有格式 |
 
 ```
-mousepos.exe              # 每 500ms 打印一次，Ctrl+C 退出
+screenshot.exe                        # -> shot.png
+screenshot.exe --list                 # 只看布局
+move.exe 960 540                      # 移到物理坐标
+move.exe --dx 40 --dy 0               # 相对移动
+click.exe 960 540 --dry               # 只报告将要点击什么
+click.exe --double                    # 在当前位置双击
 mousepos.exe --count 10
-mousepos.exe --interval 100
+
+type.exe "hello 你好"                  # 逐字符输入（先点一下目标窗口；cmd 里要写全 type.exe）
+type.exe "abc" --interval 300         # 每字符间隔 300ms
+key.exe ctrl+s                        # 组合键；--hold MS 设按住时长
+clip.exe --set "文字"                  # 写剪贴板（配 key.exe ctrl+v 发长文本最快）
+clip.exe --get / --list               # 读回来 / 看当前有哪些格式
 ```
 
-**看什么：**
+## 设计约定
 
-1. **把鼠标推到屏幕最右下角** → 读数应当接近 `(1919, 1079)`
-2. **推到左上角** → 应当接近 `(0, 0)`
-3. 如果读到的是 `(1535, 863)` 这种"被除过"的数 → DPI 感知没生效
-4. 插上/拔掉第二块屏，**再跑一次** → 布局应当立刻跟着变
-
-程序还会显示光标在**哪个显示器**、以及**在该显示器内的局部坐标**，
-`mon idx = -1` 表示光标处在虚拟桌面里没有显示器的"黑洞区"。
-
----
-
-## 设计约定（从一开始就守住）
-
-1. **每个 exe 的第一行都是 `WmEnablePerMonitorV2()`**，早于任何 GDI / 窗口调用
-2. **只谈物理像素**，永远不做缩放换算
-3. 每次运行都重新查询显示器布局，不缓存
-4. 控制台输出一律 ASCII，只有路径走 UTF-8 输出助手
-5. 不信返回值 —— 每个动作之后都要"读回状态"或"看截图"验证
-   （`SendInput` 会返回成功却什么都没做）
+1. 每个需要鼠标或屏幕的 exe 的第一行都是 `WmEnablePerMonitorV2()`，早于任何 GDI / 窗口调用
+   （键盘 / 剪贴板工具不碰坐标，是这条的例外）
+2. 只谈物理像素，工具不做缩放换算
+3. 原子操作，尽量不缓存，比如屏幕数量、大小等
+4. 考虑到win的字符问题，控制台尽量 ASCII，只有路径窗口标题走 UTF-8 输出
+5. 不信返回值 —— 动作之后通过"读回状态"或"看截图"验证
+   （比如 `SendInput` 会返回成功却什么都没做）
 
 ---
 
 ## 文件
 
-| 路径 | 作用 |
+| 文件 | 作用 |
 |---|---|
-| `feasibility-validation/winmon.h` | 共用基础设施：DPI 感知、显示器枚举、UTF-8 输出 |
-| `feasibility-validation/screenshot.cpp` | 截单个显示器，输出 PNG + 打印布局与坐标映射 |
-| `feasibility-validation/mousepos.cpp` | 实时打印光标物理坐标 |
-| `feasibility-validation/编译说明.md` | 两行 g++ 编译命令 |
+| `winmon.h` | 共用基础设施：DPI 感知、显示器枚举、UTF-8 输出 |
+| `screenshot.cpp` | 截单个显示器，输出 PNG + 打印布局与坐标映射 |
+| `mousepos.cpp` | 实时打印光标物理坐标 |
+| `move.cpp` | 移动光标 + 读回验证 |
+| `click.cpp` | 鼠标点击（含动作前目标报告） |
+| `type.cpp` | `SendInput` + `KEYEVENTF_UNICODE` 逐字符输入文本 |
+| `key.cpp` | `SendInput` + 虚拟键，组合键 / 按住时长 / 退出前补 `KEYUP` |
+| `clip.cpp` | 剪贴板读写与格式枚举 |
+| `编译说明.md` | 编译参数详解 |
 
----
+## 其他
+
+本文件仅作为可行性测试的说明文件和记录文件。实际功能与此无关。

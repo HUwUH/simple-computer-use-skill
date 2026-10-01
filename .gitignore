@@ -9,3 +9,6 @@
 *.tmp
 temp/
 tmp/
+
+# 其他
+*.png
