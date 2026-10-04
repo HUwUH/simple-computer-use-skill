@@ -44,4 +44,15 @@ void ScreenInit(void);      // 由 ActionsInit 调用
 void ActScreenshot(int argc, char** argv, ActionResult* r);
 void ActZoom(int argc, char** argv, ActionResult* r);
 
+// act_mouse.cpp
+void ActMove(int argc, char** argv, ActionResult* r);
+void ActClick(int argc, char** argv, ActionResult* r);
+
+// act_overlay.cpp —— 预备窗口（黄圈）
+//
+// 返回 true  = 通过，可以执行动作
+// 返回 false = 人在这一秒里把光标移开超过 50px，动作应当【取消】
+// movedOutPx 回传实际移动了多少像素
+bool OverlayArmWait(POINT startPt, int* movedOutPx);
+
 #endif // ACTIONS_H

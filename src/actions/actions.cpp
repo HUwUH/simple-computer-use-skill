@@ -42,5 +42,7 @@ void DispatchAction(int argc, char** argv, ActionResult* res) {
     else if (!strcmp(op, "get_state"))  ActGetState(argc, argv, res);
     else if (!strcmp(op, "screenshot")) ActScreenshot(argc, argv, res);
     else if (!strcmp(op, "zoom"))       ActZoom(argc, argv, res);
+    else if (!strcmp(op, "move"))       ActMove(argc, argv, res);
+    else if (!strcmp(op, "click"))      ActClick(argc, argv, res);
     else FailJ(res, ST_USAGE, op, "unknown-action", "unknown action");
 }
