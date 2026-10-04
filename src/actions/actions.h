@@ -50,6 +50,10 @@ void ActClick(int argc, char** argv, ActionResult* r);
 void ActDrag(int argc, char** argv, ActionResult* r);
 void ActScroll(int argc, char** argv, ActionResult* r);
 
+// act_kbd.cpp
+void ActType(int argc, char** argv, ActionResult* r);
+void ActKey(int argc, char** argv, ActionResult* r);
+
 // act_overlay.cpp —— 预备窗口（黄圈）
 //
 // 返回 true  = 通过，可以执行动作

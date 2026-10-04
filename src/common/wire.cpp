@@ -325,6 +325,46 @@ bool SendAll(HANDLE h, const void* data, int len) {
     return true;
 }
 
+// 收满 len 个字节
+static bool RecvAll(HANDLE h, void* buf, int len) {
+    char* p    = (char*)buf;
+    int   left = len;
+    while (left > 0) {
+        DWORD got = 0;
+        if (!ReadFile(h, p, (DWORD)left, &got, NULL) || got == 0) return false;
+        p    += got;
+        left -= (int)got;
+    }
+    return true;
+}
+
+// ===========================================================================
+// 请求的收发：4 字节小端长度 + 内容
+// ===========================================================================
+bool SendFrame(HANDLE h, const void* data, int len) {
+    unsigned char hdr[4];
+    hdr[0] = (unsigned char)( len        & 0xFF);
+    hdr[1] = (unsigned char)((len >>  8) & 0xFF);
+    hdr[2] = (unsigned char)((len >> 16) & 0xFF);
+    hdr[3] = (unsigned char)((len >> 24) & 0xFF);
+
+    return SendAll(h, hdr, 4) && SendAll(h, data, len);
+}
+
+int RecvFrame(HANDLE h, char* out, int cap) {
+    if (!out || cap <= 0) return -1;
+
+    unsigned char hdr[4];
+    if (!RecvAll(h, hdr, 4)) return -1;
+
+    int len = (int)hdr[0] | ((int)hdr[1] << 8) | ((int)hdr[2] << 16) | ((int)hdr[3] << 24);
+    if (len < 0 || len >= cap) return -1;   // 长度不合理 / 缓冲装不下
+
+    if (!RecvAll(h, out, len)) return -1;
+    out[len] = '\0';
+    return len;
+}
+
 // 返回实际字节数；-1 = 失败。
 // 注意：读到的字节里可以包含 '\0'（请求体就是 NUL 分隔的），
 //       所以不能用 strlen 来量长度 —— 这也是这个函数必须返回字节数的原因。

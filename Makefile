@@ -29,7 +29,8 @@ ACTIONS = \
     src/actions/act_state.cpp \
     src/actions/act_screen.cpp \
     src/actions/act_mouse.cpp \
-    src/actions/act_overlay.cpp
+    src/actions/act_overlay.cpp \
+    src/actions/act_kbd.cpp
 
 all: bin/simple_cua.exe bin/cua_server.exe
 

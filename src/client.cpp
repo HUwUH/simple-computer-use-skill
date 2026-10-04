@@ -148,16 +148,16 @@ int wmain(int argc, wchar_t** argv) {
     for (size_t i = 0; i < args.size(); ++i) ptrs.push_back(args[i].c_str());
 
     char req[8192];
-    int n = wire::EncodeArgv((int)ptrs.size(), ptrs.data(), req, sizeof(req) - 2);
+    int n = wire::EncodeArgv((int)ptrs.size(), ptrs.data(), req, sizeof(req));
     if (n < 0) {
         CloseHandle(h);
         rc = EmitFail("request-too-long", "the argument list is too long", ST_USAGE);
         WinRestoreConsole();
         return rc;
     }
-    req[n++] = '\n';
 
-    if (!wire::SendAll(h, req, n)) {
+    // 长度前缀定界 —— 内容里含换行也没问题（type --text 就可能是这样）
+    if (!wire::SendFrame(h, req, n)) {
         CloseHandle(h);
         rc = EmitFail("send-failed", "failed to write the request to the server", ST_SERVER);
         WinRestoreConsole();

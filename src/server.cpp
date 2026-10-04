@@ -185,7 +185,8 @@ int wmain(int argc, wchar_t** argv) {
         }
 
         char req[8192] = "";
-        int  reqLen = wire::RecvLine(srv, req, sizeof(req));
+        // 用【长度前缀】定界，不是"读到换行" —— 请求里可以含换行
+        int  reqLen = wire::RecvFrame(srv, req, sizeof(req));
 
         if (reqLen >= 0) {
             char* av[64];
