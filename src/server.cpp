@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 
 // ---------------------------------------------------------------------------
 // 日志：同时写到控制台（给人看）和 server.exe 同目录下的文本文件（留档）
@@ -99,10 +100,30 @@ static bool AnotherServerIsRunning(void) {
 }
 
 // ---------------------------------------------------------------------------
+// 用法： cua_server.exe [--allow-all-users]
+// ---------------------------------------------------------------------------
 int wmain(int argc, wchar_t** argv) {
-    (void)argc; (void)argv;
-
     WinUseUtf8Console();
+
+    bool allowAllUsers = false;
+    for (int i = 1; i < argc; ++i) {
+        if (!wcscmp(argv[i], L"--allow-all-users")) {
+            allowAllUsers = true;
+        } else if (!wcscmp(argv[i], L"--help") || !wcscmp(argv[i], L"-h")) {
+            printf("usage: cua_server.exe [--allow-all-users]\n\n");
+            printf("  (no option)         只允许【本登录会话】里的进程连接（默认，最安全）\n");
+            printf("  --allow-all-users   把管道 DACL 放宽到 Everyone。\n");
+            printf("                      只应在默认方式连不上时才用（即 server 与 agent 不在\n");
+            printf("                      同一个登录会话）。打开后【任何本地账户】都能连上来\n");
+            printf("                      驱动这台机器的鼠标和键盘。\n");
+            return ST_OK;
+        } else {
+            printf("unknown option: %ls\n", argv[i]);
+            printf("usage: cua_server.exe [--allow-all-users]\n");
+            return ST_USAGE;
+        }
+    }
+    wire::SetAllowAllUsers(allowAllUsers);
 
     // ★ 第一件事：DPI 感知。之后所有坐标才是物理像素。
     const char* dpiMode = WmEnablePerMonitorV2();
@@ -124,6 +145,16 @@ int wmain(int argc, wchar_t** argv) {
     LogLine("  run `simple_cua.exe ping` to see the integrity level this server runs at.");
     LogLine("  press Ctrl+C or close this window to stop.");
 
+    if (allowAllUsers) {
+        LogLine("");
+        LogLine("  ###########################################################");
+        LogLine("  #  --allow-all-users is ON                                 #");
+        LogLine("  #  ANY local account can connect and drive this machine's  #");
+        LogLine("  #  mouse and keyboard while this server is running.        #");
+        LogLine("  ###########################################################");
+        LogLine("");
+    }
+
     // --- 建管道 ---
     HANDLE srv = wire::CreateServerPipe();
     if (!srv) {
@@ -132,6 +163,14 @@ int wmain(int argc, wchar_t** argv) {
                 "could not be applied)");
         WinRestoreConsole();
         return ST_SERVER;
+    }
+
+    // 这一行是排查"低权限的 agent 连不上"的第一现场。
+    // 正常应该是： dacl=current-user+logon-session  low-label=set
+    LogLine("  pipe-security: %s", wire::PipeSecuritySummary());
+    if (wire::PipeUsesEveryone() && !allowAllUsers) {
+        LogLine("  WARNING: could not read this process's logon SID; "
+                "fell back to Everyone.");
     }
 
     // --- 主循环：一次一个 client ---

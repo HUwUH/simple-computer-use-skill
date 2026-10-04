@@ -1,5 +1,10 @@
 #include "wire.h"
 
+// SetSecurityInfo / SE_OBJECT_TYPE / SE_KERNEL_OBJECT 在 aclapi.h + accctrl.h 里，
+// windows.h 【不会】自动把它们带进来（ACL 的构造函数在 securitybaseapi.h，那个倒是带了）。
+#include <aclapi.h>
+#include <accctrl.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,10 +14,22 @@ namespace wire {
 const wchar_t* PipeName() { return L"\\\\.\\pipe\\simple_cua"; }
 
 // ===========================================================================
-// 安全描述符：DACL 只给当前用户 + 强制标签 Low
+// 安全描述符
 // ===========================================================================
 
+static SID_IDENTIFIER_AUTHORITY g_mlAuthority = SECURITY_MANDATORY_LABEL_AUTHORITY;
+
+static PACL  g_lowLabelSacl  = NULL;   // 建一次，复用
+static bool  g_allowAllUsers = false;  // server 的 --allow-all-users
+static bool  g_usedEveryone  = false;  // 实际有没有用 Everyone
+static DWORD g_labelError    = 0;      // 0 = 设标签成功
+static char  g_summary[256]  = "";     // 给 server 启动日志用
+
+void SetAllowAllUsers(bool on) { g_allowAllUsers = on; }
+
+// ---------------------------------------------------------------------------
 // 取当前进程用户的 SID。返回的内存由调用方 free。
+// ---------------------------------------------------------------------------
 static PSID GetCurrentUserSid() {
     HANDLE tok = NULL;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok)) return NULL;
@@ -36,42 +53,117 @@ static PSID GetCurrentUserSid() {
     return sid;
 }
 
-static SID_IDENTIFIER_AUTHORITY g_mlAuthority = SECURITY_MANDATORY_LABEL_AUTHORITY;
+// ---------------------------------------------------------------------------
+// 取本进程的【登录会话 SID】(S-1-5-5-X-Y)
+//
+// 同一登录会话里的所有进程共享它 —— 包括你在终端里启动的 server，和 DSH 里
+// agent 启动的 client。这就是让受限令牌客户端能通过写检查的关键：
+// 登录 SID 在"限制 SID 检查"里是被接受的（而 S-1-4-… capability 不是）。
+//
+// 返回的内存由调用方 free。
+// ---------------------------------------------------------------------------
+static PSID GetLogonSid() {
+    HANDLE tok = NULL;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok)) return NULL;
 
-// 构造一个 SECURITY_ATTRIBUTES（含 DACL + Low 强制标签）。
-// 里面的内存是一次性的，进程存活期间不释放（只建一次管道，无所谓）。
-static SECURITY_ATTRIBUTES* BuildPipeSecurity() {
-    PSID userSid = GetCurrentUserSid();
-    if (!userSid) return NULL;
+    DWORD len = 0;
+    GetTokenInformation(tok, TokenGroups, NULL, 0, &len);
+    if (len == 0) { CloseHandle(tok); return NULL; }
+
+    TOKEN_GROUPS* groups = (TOKEN_GROUPS*)malloc(len);
+    if (!groups) { CloseHandle(tok); return NULL; }
+    if (!GetTokenInformation(tok, TokenGroups, groups, len, &len)) {
+        free(groups); CloseHandle(tok); return NULL;
+    }
+
+    PSID logonSid = NULL;
+    for (DWORD i = 0; i < groups->GroupCount; ++i) {
+        if ((groups->Groups[i].Attributes & SE_GROUP_LOGON_ID) == SE_GROUP_LOGON_ID) {
+            DWORD n = GetLengthSid(groups->Groups[i].Sid);
+            logonSid = malloc(n);
+            if (logonSid) CopySid(n, logonSid, groups->Groups[i].Sid);
+            break;
+        }
+    }
+
+    free(groups);
+    CloseHandle(tok);
+    return logonSid;
+}
+
+// Everyone (S-1-1-0)
+static PSID GetEveryoneSid() {
+    SID_IDENTIFIER_AUTHORITY worldAuth = SECURITY_WORLD_SID_AUTHORITY;
+    PSID sid = NULL;
+    if (!AllocateAndInitializeSid(&worldAuth, 1, SECURITY_WORLD_RID,
+                                  0, 0, 0, 0, 0, 0, 0, &sid)) {
+        return NULL;
+    }
+    return sid;
+}
+
+// ---------------------------------------------------------------------------
+// 构造 DACL：当前用户 + （登录会话 SID 或 Everyone）
+//
+// 只写 DACL，不写 SACL —— 标签必须走 SetSecurityInfo 单独设（见头文件说明）。
+// ---------------------------------------------------------------------------
+static PACL BuildPipeDacl(PSID userSid, PSID secondSid) {
+    const DWORD aceHeader = sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD);
+    DWORD userLen   = userSid   ? GetLengthSid(userSid)   : 0;
+    DWORD secondLen = secondSid ? GetLengthSid(secondSid) : 0;
+
+    DWORD size = sizeof(ACL);
+    if (userLen)   size += aceHeader + userLen;
+    if (secondLen) size += aceHeader + secondLen;
+
+    PACL dacl = (PACL)malloc(size);
+    if (!dacl) return NULL;
+    if (!InitializeAcl(dacl, size, ACL_REVISION)) return NULL;
+
+    if (userLen &&
+        !AddAccessAllowedAce(dacl, ACL_REVISION, GENERIC_READ | GENERIC_WRITE, userSid)) {
+        return NULL;
+    }
+    if (secondLen &&
+        !AddAccessAllowedAce(dacl, ACL_REVISION, GENERIC_READ | GENERIC_WRITE, secondSid)) {
+        return NULL;
+    }
+    return dacl;
+}
+
+// ---------------------------------------------------------------------------
+// 构造强制标签 SACL：Low + NO_WRITE_UP
+//
+// 失败时把 Win32 错误码记进 g_saclError —— 诊断串要把它打出来。
+// 这个函数可能失败在好几步（分配 SID / 建 ACL / 拷 SID / 加 ACE），
+// 只报一个笼统的 FAILED 会让人多绕好几轮。
+// ---------------------------------------------------------------------------
+static DWORD g_saclError = 0;
+
+static PACL BuildLowLabelSacl() {
+    g_saclError = 0;
 
     PSID lowSid = NULL;
     if (!AllocateAndInitializeSid(&g_mlAuthority, 1, SECURITY_MANDATORY_LOW_RID,
                                   0, 0, 0, 0, 0, 0, 0, &lowSid)) {
-        free(userSid);
+        g_saclError = GetLastError();
+        return NULL;
+    }
+    DWORD lowLen = GetLengthSid(lowSid);
+
+    DWORD size = sizeof(ACL) + sizeof(SYSTEM_MANDATORY_LABEL_ACE) - sizeof(DWORD) + lowLen;
+    PACL sacl = (PACL)malloc(size);
+    if (!sacl) {
+        g_saclError = ERROR_NOT_ENOUGH_MEMORY;
+        return NULL;
+    }
+    if (!InitializeAcl(sacl, size, ACL_REVISION)) {
+        g_saclError = GetLastError();
         return NULL;
     }
 
-    DWORD userLen = GetLengthSid(userSid);
-    DWORD lowLen  = GetLengthSid(lowSid);
-
-    // --- DACL：只给当前用户读写 ---
-    DWORD daclSize = sizeof(ACL) + sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD) + userLen;
-    PACL dacl = (PACL)malloc(daclSize);
-    if (!dacl) return NULL;
-    if (!InitializeAcl(dacl, daclSize, ACL_REVISION) ||
-        !AddAccessAllowedAce(dacl, ACL_REVISION, GENERIC_READ | GENERIC_WRITE, userSid)) {
-        return NULL;
-    }
-
-    // --- SACL：一条强制标签 ACE，Low + NO_WRITE_UP ---
-    //
     // 手工构造这条 ACE，而不是用 AddMandatoryAce —— 后者在部分 MinGW 头文件里
     // 未必声明，手工构造可移植。
-    DWORD saclSize = sizeof(ACL) + sizeof(SYSTEM_MANDATORY_LABEL_ACE) - sizeof(DWORD) + lowLen;
-    PACL sacl = (PACL)malloc(saclSize);
-    if (!sacl) return NULL;
-    if (!InitializeAcl(sacl, saclSize, ACL_REVISION)) return NULL;
-
     BYTE aceBuf[sizeof(SYSTEM_MANDATORY_LABEL_ACE) + SECURITY_MAX_SID_SIZE];
     ZeroMemory(aceBuf, sizeof(aceBuf));
     SYSTEM_MANDATORY_LABEL_ACE* ace = (SYSTEM_MANDATORY_LABEL_ACE*)aceBuf;
@@ -79,45 +171,117 @@ static SECURITY_ATTRIBUTES* BuildPipeSecurity() {
     ace->Header.AceSize  = (WORD)(sizeof(SYSTEM_MANDATORY_LABEL_ACE) - sizeof(DWORD) + lowLen);
     ace->Header.AceFlags = 0;
     ace->Mask            = SYSTEM_MANDATORY_LABEL_NO_WRITE_UP;
-    if (!CopySid(lowLen, (PSID)&ace->SidStart, lowSid)) return NULL;
-    if (!AddAce(sacl, ACL_REVISION, MAXDWORD, ace, ace->Header.AceSize)) return NULL;
-
-    // --- 组装 SD ---
-    SECURITY_DESCRIPTOR* sd = (SECURITY_DESCRIPTOR*)malloc(sizeof(SECURITY_DESCRIPTOR));
-    if (!sd) return NULL;
-    if (!InitializeSecurityDescriptor(sd, SECURITY_DESCRIPTOR_REVISION) ||
-        !SetSecurityDescriptorDacl(sd, TRUE, dacl, FALSE) ||
-        !SetSecurityDescriptorSacl(sd, TRUE, sacl, FALSE)) {
+    if (!CopySid(lowLen, (PSID)&ace->SidStart, lowSid)) {
+        g_saclError = GetLastError();
+        return NULL;
+    }
+    if (!AddAce(sacl, ACL_REVISION, MAXDWORD, ace, ace->Header.AceSize)) {
+        g_saclError = GetLastError();
         return NULL;
     }
 
-    SECURITY_ATTRIBUTES* sa = (SECURITY_ATTRIBUTES*)malloc(sizeof(SECURITY_ATTRIBUTES));
-    if (!sa) return NULL;
-    sa->nLength              = sizeof(SECURITY_ATTRIBUTES);
-    sa->lpSecurityDescriptor = sd;
-    sa->bInheritHandle       = FALSE;
-    return sa;
+    return sacl;
 }
 
 // ===========================================================================
 // server 侧
 // ===========================================================================
 HANDLE CreateServerPipe() {
-    SECURITY_ATTRIBUTES* sa = BuildPipeSecurity();
-    if (!sa) return NULL;
+    PSID userSid = GetCurrentUserSid();
+
+    // --- 选第二个被授权者 ---
+    //   默认：登录会话 SID（范围最小，够用）
+    //   --allow-all-users：Everyone（逃生开关）
+    //   读不到登录 SID 时也退化成 Everyone，并在日志里标出来
+    PSID secondSid = NULL;
+    const char* secondName = "(none)";
+
+    if (g_allowAllUsers) {
+        secondSid  = GetEveryoneSid();
+        secondName = "EVERYONE(--allow-all-users)";
+        g_usedEveryone = true;
+    } else {
+        secondSid = GetLogonSid();
+        if (secondSid) {
+            secondName = "logon-session";
+        } else {
+            secondSid  = GetEveryoneSid();
+            secondName = "EVERYONE(fallback: no logon sid)";
+            g_usedEveryone = true;
+        }
+    }
+
+    if (!userSid && !secondSid) return NULL;
+
+    PACL dacl = BuildPipeDacl(userSid, secondSid);
+    if (!dacl) return NULL;
+
+    if (!g_lowLabelSacl) g_lowLabelSacl = BuildLowLabelSacl();
+
+    SECURITY_DESCRIPTOR* sd = (SECURITY_DESCRIPTOR*)malloc(sizeof(SECURITY_DESCRIPTOR));
+    if (!sd) return NULL;
+    if (!InitializeSecurityDescriptor(sd, SECURITY_DESCRIPTOR_REVISION) ||
+        !SetSecurityDescriptorDacl(sd, TRUE, dacl, FALSE)) {
+        return NULL;
+    }
+
+    SECURITY_ATTRIBUTES sa;
+    sa.nLength              = sizeof(SECURITY_ATTRIBUTES);
+    sa.lpSecurityDescriptor = sd;
+    sa.bInheritHandle       = FALSE;
 
     // maxInstances = 1 -> 同一时刻只允许一个 client，天然实现"带锁"
+    // WRITE_OWNER是必要的，尽管我们并不打算改属主，但是，设置【强制完整性标签】(SetSecurityInfo + LABEL_SECURITY_INFORMATION)
+    // 要求句柄带 WRITE_OWNER。CreateNamedPipe 默认不返回这个权限，必须显式加上。
     HANDLE h = CreateNamedPipeW(
         PipeName(),
-        PIPE_ACCESS_DUPLEX,
+        PIPE_ACCESS_DUPLEX  | WRITE_OWNER, // 给予server修改属主的权限
         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
         1,          // 只允许一个实例
         64 * 1024,  // 输出缓冲
         64 * 1024,  // 输入缓冲
         0,
-        sa);
+        &sa);
 
-    return (h == INVALID_HANDLE_VALUE) ? NULL : h;
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+
+    // -----------------------------------------------------------------------
+    // ★ 强制标签必须单独设
+    //
+    // 传给 CreateNamedPipe 的 SACL 会被内核【静默忽略】—— 创建对象时提供 SACL
+    // 需要 SeSecurityPrivilege，而普通权限进程没有。设标签的正当途径是
+    // SetSecurityInfo + LABEL_SECURITY_INFORMATION，它只要求 WRITE_OWNER
+    //（所以上面 dwOpenMode 里必须带 WRITE_OWNER）。
+    //
+    // 顺便对比一下 DACL 和强制标签在这件事上的差别 —— 这是最容易记混的一点：
+    //   DACL     —— 可以走创建时的 SECURITY_ATTRIBUTES，【不需要任何句柄权限】
+    //   强制标签 —— 创建时给不了（会被静默丢掉），只能事后设，而事后设要 WRITE_OWNER
+    // -----------------------------------------------------------------------
+    g_labelError = 0;
+    if (g_lowLabelSacl) {
+        g_labelError = SetSecurityInfo(h, SE_KERNEL_OBJECT, LABEL_SECURITY_INFORMATION,
+                                       NULL, NULL, NULL, g_lowLabelSacl);
+    }
+    // 若 g_lowLabelSacl 为 NULL，说明 BuildLowLabelSacl 失败，原因在 g_saclError
+
+    // 诊断串：把"构造失败"和"设置失败"分开，并且【一定带上错误码】
+    char labelInfo[80];
+    if (!g_lowLabelSacl) {
+        snprintf(labelInfo, sizeof(labelInfo), "BUILD-FAILED(err=%lu)",
+                 (unsigned long)g_saclError);
+    } else if (g_labelError != 0) {
+        snprintf(labelInfo, sizeof(labelInfo), "SET-FAILED(err=%lu)",
+                 (unsigned long)g_labelError);
+    } else {
+        snprintf(labelInfo, sizeof(labelInfo), "set(Low)");
+    }
+
+    snprintf(g_summary, sizeof(g_summary), "dacl=%s+%s  low-label=%s",
+             userSid ? "current-user" : "(no-user)",
+             secondName,
+             labelInfo);
+
+    return h;
 }
 
 bool AcceptClient(HANDLE serverPipe) {
@@ -126,6 +290,13 @@ bool AcceptClient(HANDLE serverPipe) {
     BOOL ok = ConnectNamedPipe(serverPipe, NULL);
     if (ok) return true;
     return GetLastError() == ERROR_PIPE_CONNECTED;
+}
+
+bool PipeUsesEveryone() { return g_usedEveryone; }
+
+const char* PipeSecuritySummary() {
+    if (g_summary[0]) return g_summary;
+    return "(pipe not created yet)";
 }
 
 // ===========================================================================
@@ -143,7 +314,7 @@ HANDLE ConnectToServer(int timeoutMs) {
 // 收发
 // ===========================================================================
 bool SendAll(HANDLE h, const void* data, int len) {
-    const char* p   = (const char*)data;
+    const char* p    = (const char*)data;
     int         left = len;
     while (left > 0) {
         DWORD wrote = 0;
