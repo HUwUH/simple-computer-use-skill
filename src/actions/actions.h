@@ -47,6 +47,8 @@ void ActZoom(int argc, char** argv, ActionResult* r);
 // act_mouse.cpp
 void ActMove(int argc, char** argv, ActionResult* r);
 void ActClick(int argc, char** argv, ActionResult* r);
+void ActDrag(int argc, char** argv, ActionResult* r);
+void ActScroll(int argc, char** argv, ActionResult* r);
 
 // act_overlay.cpp —— 预备窗口（黄圈）
 //
