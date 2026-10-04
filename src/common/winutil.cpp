@@ -26,13 +26,25 @@ void WinRestoreConsole(void) {
 // ===========================================================================
 // 宽字符 -> UTF-8
 // ===========================================================================
-static void ToUtf8(const wchar_t* src, char* out, int cap) {
+void WinToUtf8(const wchar_t* src, char* out, int cap) {
     if (!out || cap <= 0) return;
     out[0] = '\0';
     if (!src) return;
     int n = WideCharToMultiByte(CP_UTF8, 0, src, -1, out, cap, NULL, NULL);
     if (n <= 0) out[0] = '\0';
     else        out[n - 1] = '\0';
+}
+
+static void ToUtf8(const wchar_t* src, char* out, int cap) {
+    WinToUtf8(src, out, cap);
+}
+
+// UTF-8 -> 宽字符
+bool WinToWide(const char* src, wchar_t* out, int outCount) {
+    if (!src || !out || outCount <= 0) return false;
+    out[0] = 0;
+    int n = MultiByteToWideChar(CP_UTF8, 0, src, -1, out, outCount);
+    return n > 0;
 }
 
 // ===========================================================================

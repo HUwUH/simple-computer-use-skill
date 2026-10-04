@@ -174,16 +174,14 @@ int RecvLine(HANDLE h, char* out, int cap) {
 // ===========================================================================
 // argv 编解码
 // ===========================================================================
-int EncodeArgv(int argc, wchar_t** argv, char* out, int cap) {
+int EncodeArgv(int n, const char* const* args, char* out, int cap) {
     int used = 0;
-    for (int i = 0; i < argc; ++i) {
-        char utf8[4096];
-        int n = WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, utf8, sizeof(utf8), NULL, NULL);
-        if (n <= 0) { utf8[0] = '\0'; n = 1; }
-        n -= 1;   // 去掉结尾的 NUL
-        if (used + n + 1 > cap) return -1;
-        memcpy(out + used, utf8, n);
-        used += n;
+    for (int i = 0; i < n; ++i) {
+        const char* a = args[i] ? args[i] : "";
+        int len = (int)strlen(a);
+        if (used + len + 1 > cap) return -1;
+        memcpy(out + used, a, len);
+        used += len;
         out[used++] = '\0';       // 分隔符
     }
     return used;

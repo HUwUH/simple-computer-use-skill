@@ -89,9 +89,12 @@ bool SendAll(HANDLE h, const void* data, int len);
 //    （曾导致 `get_state --cursor` 的 --cursor 完全不生效）。
 int RecvLine(HANDLE h, char* out, int cap);
 
-// 把宽字符 argv 编码成 NUL 分隔的 UTF-8 字节流（末尾补一个 NUL）。
-// 返回写出的字节数（不含最后的哨兵 NUL）。
-int EncodeArgv(int argc, wchar_t** argv, char* out, int cap);
+// 把【UTF-8 的】参数列表编码成 NUL 分隔的字节流（每个 token 后跟一个 NUL）。
+// 返回写出的字节数（不含额外的哨兵）。
+//
+// 注意这里收的是 UTF-8 字符串而不是宽字符 —— 因为 client 需要先对参数做处理
+// （把 --out 解析成绝对路径），用字符串更方便。
+int EncodeArgv(int n, const char* const* args, char* out, int cap);
 
 // 把 NUL 分隔的 UTF-8 字节流解码成 argv（就地修改 buffer，插入 '\0'）。
 // argv 数组最多 maxArgc 项。返回实际项数。

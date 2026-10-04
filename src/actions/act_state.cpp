@@ -5,57 +5,12 @@
 // ===========================================================================
 
 #include "actions.h"
+#include "jsonhelp.h"
 #include "../common/winmon.h"
 #include "../common/winutil.h"
-#include "../common/wire.h"
 
-#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
-
-static ULONGLONG g_startTick = 0;
-
-void ActionsInit(void) {
-    WmLoadMonitors();
-    g_startTick = GetTickCount64();
-}
-
-// ---------------------------------------------------------------------------
-// JSON 拼接小工具
-//
-// 就是往一个固定缓冲里追加。没有解析器，所以很简单 ——
-// 真正需要小心的只有"字符串要转义"和"别溢出"。
-// ---------------------------------------------------------------------------
-static void Cat(char* buf, int cap, const char* fmt, ...) {
-    int n = (int)strlen(buf);
-    if (n >= cap - 1) return;
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(buf + n, cap - n, fmt, ap);
-    va_end(ap);
-}
-
-// 追加 ,"key":"value"（utf8 字符串，自动 JSON 转义）
-static void CatKV(char* buf, int cap, const char* key, const char* value) {
-    Cat(buf, cap, ",\"%s\":", key);
-    wire::JsonEscapeAppend(buf, cap, value ? value : "");
-}
-
-// 追加 ,"key":raw（数字 / true / false / 数组 —— 调用方保证是合法 JSON）
-static void CatKR(char* buf, int cap, const char* key, const char* raw) {
-    Cat(buf, cap, ",\"%s\":%s", key, raw);
-}
-
-// 统一的失败输出
-static void FailJ(ActionResult* r, int status, const char* op,
-                  const char* code, const char* msg) {
-    r->status = status;
-    char esc[1024] = "";
-    wire::JsonEscapeAppend(esc, sizeof(esc), msg ? msg : "");
-    snprintf(r->json, sizeof(r->json),
-             "{\"ok\":false,\"op\":\"%s\",\"code\":\"%s\",\"msg\":%s}",
-             op, code, esc);
-}
 
 // ---------------------------------------------------------------------------
 // 取本进程的完整性级别和是否提权
@@ -97,7 +52,7 @@ static void GetIntegrity(char* out, int cap, bool* elevated) {
 // ===========================================================================
 // ping
 // ===========================================================================
-static void ActPing(ActionResult* r) {
+void ActPing(ActionResult* r) {
     char integ[64];
     bool elev = false;
     GetIntegrity(integ, sizeof(integ), &elev);
@@ -107,8 +62,7 @@ static void ActPing(ActionResult* r) {
     Cat(r->json, sizeof(r->json), ",\"pid\":%lu", (unsigned long)GetCurrentProcessId());
     CatKV(r->json, sizeof(r->json), "integrity", integ);
     CatKR(r->json, sizeof(r->json), "elevated", elev ? "true" : "false");
-    Cat(r->json, sizeof(r->json), ",\"uptime_s\":%llu",
-        (unsigned long long)((GetTickCount64() - g_startTick) / 1000));
+    Cat(r->json, sizeof(r->json), ",\"uptime_s\":%llu", ActionsUptimeSeconds());
     Cat(r->json, sizeof(r->json), "}");
     r->status = ST_OK;
 }
@@ -121,7 +75,7 @@ static void ActPing(ActionResult* r) {
 //   --held    只返回当前按住的键和鼠标按钮
 //   两个都给 -> 返回这两项；都不给 -> 返回全部
 // ===========================================================================
-static void ActGetState(int argc, char** argv, ActionResult* r) {
+void ActGetState(int argc, char** argv, ActionResult* r) {
     bool onlyCursor = false, onlyHeld = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -171,9 +125,7 @@ static void ActGetState(int argc, char** argv, ActionResult* r) {
             Cat(r->json, sizeof(r->json), "{\"i\":%d,\"dev\":", i);
             {
                 char dev[128];
-                // 设备名是宽字符，转 UTF-8 后按 JSON 字符串输出
-                int n = WideCharToMultiByte(CP_UTF8, 0, m.device, -1, dev, sizeof(dev), NULL, NULL);
-                if (n <= 0) dev[0] = '\0';
+                WinToUtf8(m.device, dev, sizeof(dev));
                 wire::JsonEscapeAppend(r->json, sizeof(r->json), dev);
             }
             Cat(r->json, sizeof(r->json),
@@ -198,8 +150,7 @@ static void ActGetState(int argc, char** argv, ActionResult* r) {
         wire::JsonEscapeAppend(r->json, sizeof(r->json), ut);
         Cat(r->json, sizeof(r->json), "}");
 
-        // 注意坐标系：这是唯一的例外，clip 天生是【屏幕空间】的矩形，
-        // 不是显示器局部坐标 —— 它可能横跨多台显示器。
+        // 唯一的例外：clip 天生是【屏幕空间】的矩形，可能横跨多台显示器
         RECT clip;
         if (WinGetClipRect(&clip)) {
             Cat(r->json, sizeof(r->json), ",\"clip_screen\":[%d,%d,%d,%d]",
@@ -216,23 +167,4 @@ static void ActGetState(int argc, char** argv, ActionResult* r) {
 
     Cat(r->json, sizeof(r->json), "}");
     r->status = ST_OK;
-}
-
-// ===========================================================================
-// 分发
-// ===========================================================================
-void DispatchAction(int argc, char** argv, ActionResult* res) {
-    res->status = ST_OK;
-    res->json[0] = '\0';
-
-    if (argc <= 0) {
-        FailJ(res, ST_USAGE, "", "no-action", "no action given");
-        return;
-    }
-
-    const char* op = argv[0];
-
-    if      (!strcmp(op, "ping"))      ActPing(res);
-    else if (!strcmp(op, "get_state")) ActGetState(argc, argv, res);
-    else FailJ(res, ST_USAGE, op, "unknown-action", "unknown action");
 }
