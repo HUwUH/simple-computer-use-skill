@@ -1,6 +1,6 @@
 # simple-computer-use
 
-无需安装的 Windows computer-use 工具。设计稿见上一层目录的 `设计计划.md`。
+无需安装的 Windows computer-use 工具。设计稿见 [设计计划.md](设计计划.md)。说明见 [SKILL.md 的“工具概况”](SKILL.md#工具概况) 和 [references/notes.md](references/notes.md)。
 
 ## 编译
 
@@ -12,22 +12,27 @@ mingw32-make
 
 ## 用法
 
-1. 在**普通权限**的终端里运行 `bin/cua_server.exe`（**不要**以管理员运行）
-2. 在另一个终端里调用 `bin/simple_cua.exe <命令> [参数]`
+> 环境：windows，c++编译工具（推荐MinGW）
 
-## ⚠️ 重要
+1. 用git clone本仓库
+2. 将仓库改名为 `simple-computer-use` （或将 SKILL.md 的 name 改为 `simple-computer-use-skill`）
+3. 打开一个cmd，运行 `mingw32-make`
+4. 将本仓库直接放到 harness 对应的 skills 目录下即可
 
-- **不要把本仓库放进 DSH 的 workspace-write 工作区。**
-  DSH 会给工作区目录打 **Low 完整性标签**，标签是**可继承**的 ——
-  在那里编译出来的 exe 运行时会变成 Low 完整性，**无法注入任何输入**。
-  （标签还会跟着同盘移动走，只有跨盘复制才会摆脱。）
+## 架构与说明
 
-- server 和 client 都是普通用户权限的程序，**不需要管理员**。
+> 本节将会在之后完善
+
+请参阅 [SKILL.md 的“工具概况”](SKILL.md#工具概况) 和 [references/notes.md](references/notes.md)。
+
+
 
 ## 目录
 
 ```
+references/     给 agent 的参考文档
 src/common/     client 与 server 共用（通信、Win32 封装）
 src/actions/    server 的动作实现
 bin/            编译产物
+feasibility-validation/ 可行性验证（独立小程序，不属于构建，目前已弃用）
 ```
