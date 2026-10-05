@@ -40,11 +40,16 @@ static inline void CatKR(char* buf, int cap, const char* key, const char* raw) {
 static inline void FailJ(ActionResult* r, int status, const char* op,
                          const char* code, const char* msg) {
     r->status = status;
-    char esc[1024] = "";
-    wire::JsonEscapeAppend(esc, sizeof(esc), msg ? msg : "");
+
+    // op 也要转义 —— 它来自 argv，未知动作名里完全可能带引号
+    char opEsc[128]   = "";
+    char msgEsc[1024] = "";
+    wire::JsonEscapeAppend(opEsc,  sizeof(opEsc),  op  ? op  : "");
+    wire::JsonEscapeAppend(msgEsc, sizeof(msgEsc), msg ? msg : "");
+
     snprintf(r->json, sizeof(r->json),
-             "{\"ok\":false,\"op\":\"%s\",\"code\":\"%s\",\"msg\":%s}",
-             op, code, esc);
+             "{\"ok\":false,\"op\":%s,\"code\":\"%s\",\"msg\":%s}",
+             opEsc, code, msgEsc);
 }
 
 #endif // JSONHELP_H

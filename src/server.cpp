@@ -23,9 +23,15 @@
 #include <wchar.h>
 
 // ---------------------------------------------------------------------------
-// 日志：同时写到控制台（给人看）和 server.exe 同目录下的文本文件（留档）
+// 日志
+//
+// 两条通道，用途不同：
+//   控制台  —— 给人【立刻】看的，所以短。默认只报一行摘要；
+//              -v 时把回给 client 的内容也打出来，但截断。
+//   日志文件 —— 留档用的，所以【永远写全文】。
 // ---------------------------------------------------------------------------
 static char g_logPath[MAX_PATH] = "";
+static bool g_verbose = false;
 
 static void LogInit(void) {
     WCHAR exePath[MAX_PATH] = L"";
@@ -59,6 +65,30 @@ static void LogRotateIfNeeded(void) {
     MoveFileExA(g_logPath, rot, MOVEFILE_REPLACE_EXISTING);
 }
 
+// 只写控制台。时分秒就够 —— 人看的是"刚刚发生了什么"
+static void WriteConsole(const char* msg) {
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    printf("[%02d:%02d:%02d] %s\n", st.wHour, st.wMinute, st.wSecond, msg);
+    fflush(stdout);
+}
+
+// 只写文件。带完整日期 —— 留档要能跟别的东西对上时间
+static void WriteFile(const char* msg) {
+    if (!g_logPath[0]) return;
+    LogRotateIfNeeded();
+
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    FILE* f = fopen(g_logPath, "a");
+    if (f) {
+        fprintf(f, "[%04d-%02d-%02d %02d:%02d:%02d] %s\n",
+                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, msg);
+        fclose(f);
+    }
+}
+
+// 两条通道都写
 static void LogLine(const char* fmt, ...) {
     char msg[2048];
     va_list ap;
@@ -66,22 +96,52 @@ static void LogLine(const char* fmt, ...) {
     vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
 
-    SYSTEMTIME st;
-    GetLocalTime(&st);
+    WriteConsole(msg);
+    WriteFile(msg);
+}
 
-    // 控制台（给人看，随时知道发生了什么）
-    printf("[%02d:%02d:%02d] %s\n", st.wHour, st.wMinute, st.wSecond, msg);
-    fflush(stdout);
+// ---------------------------------------------------------------------------
+// 记录"回给 client 的完整内容"
+//
+//   日志文件：永远全文 —— 出问题时要能事后看到到底回了什么
+//   控制台  ：只有 -v 才打，而且截断
+//
+// 为什么截断到 384 字节就够了：
+//   控制台是给人【立刻】看的，一行几百字节以上就没法看了。384 字节正好够看清
+//   ok / op / 那几个关键字段；而各动作都把可能很长的字段（最典型的是 clipboard
+//   的 text）放在【最后】—— 所以从尾部截断恰好不会切掉有用的部分。
+// ---------------------------------------------------------------------------
+#define CONSOLE_REPLY_MAX 384
 
-    // 文件
-    if (!g_logPath[0]) return;
-    LogRotateIfNeeded();
-    FILE* f = fopen(g_logPath, "a");
-    if (f) {
-        fprintf(f, "[%04d-%02d-%02d %02d:%02d:%02d] %s\n",
-                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, msg);
-        fclose(f);
+static void LogReply(const char* op, int status, const char* json) {
+    // --- 文件：全文 ---
+    {
+        static char full[8192 + 128];
+        snprintf(full, sizeof(full), "%s -> status=%d\n    %s", op, status, json);
+        WriteFile(full);
     }
+
+    // --- 控制台 ---
+    if (!g_verbose) {
+        char brief[256];
+        snprintf(brief, sizeof(brief), "%s -> status=%d", op, status);
+        WriteConsole(brief);
+        return;
+    }
+
+    int n   = (int)strlen(json);
+    int cut = (n > CONSOLE_REPLY_MAX) ? CONSOLE_REPLY_MAX : n;
+    // 按 UTF-8 字符边界截断 —— 否则控制台会显示半个汉字
+    while (cut > 0 && ((unsigned char)json[cut] & 0xC0) == 0x80) --cut;
+
+    char body[CONSOLE_REPLY_MAX + 1];
+    memcpy(body, json, cut);
+    body[cut] = '\0';
+
+    char line[CONSOLE_REPLY_MAX + 128];
+    snprintf(line, sizeof(line), "%s -> status=%d  %s%s",
+             op, status, body, (n > cut) ? "  ...(truncated)" : "");
+    WriteConsole(line);
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +160,7 @@ static bool AnotherServerIsRunning(void) {
 }
 
 // ---------------------------------------------------------------------------
-// 用法： cua_server.exe [--allow-all-users]
+// 用法： cua_server.exe [--allow-all-users] [-v|--verbose]
 // ---------------------------------------------------------------------------
 int wmain(int argc, wchar_t** argv) {
     WinUseUtf8Console();
@@ -109,17 +169,22 @@ int wmain(int argc, wchar_t** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!wcscmp(argv[i], L"--allow-all-users")) {
             allowAllUsers = true;
+        } else if (!wcscmp(argv[i], L"--verbose") || !wcscmp(argv[i], L"-v")) {
+            g_verbose = true;
         } else if (!wcscmp(argv[i], L"--help") || !wcscmp(argv[i], L"-h")) {
-            printf("usage: cua_server.exe [--allow-all-users]\n\n");
+            printf("usage: cua_server.exe [--allow-all-users] [-v|--verbose]\n\n");
             printf("  (no option)         只允许【本登录会话】里的进程连接（默认，最安全）\n");
             printf("  --allow-all-users   把管道 DACL 放宽到 Everyone。\n");
             printf("                      只应在默认方式连不上时才用（即 server 与 agent 不在\n");
             printf("                      同一个登录会话）。打开后【任何本地账户】都能连上来\n");
             printf("                      驱动这台机器的鼠标和键盘。\n");
+            printf("  -v, --verbose       控制台也打印回给 client 的内容（截断到 %d 字节）。\n",
+                   CONSOLE_REPLY_MAX);
+            printf("                      完整内容始终写进日志文件。\n");
             return ST_OK;
         } else {
             printf("unknown option: %ls\n", argv[i]);
-            printf("usage: cua_server.exe [--allow-all-users]\n");
+            printf("usage: cua_server.exe [--allow-all-users] [-v|--verbose]\n");
             return ST_USAGE;
         }
     }
@@ -144,6 +209,10 @@ int wmain(int argc, wchar_t** argv) {
     LogLine("  log=%s", g_logPath[0] ? g_logPath : "(none)");
     LogLine("  run `simple_cua.exe ping` to see the integrity level this server runs at.");
     LogLine("  press Ctrl+C or close this window to stop.");
+    if (g_verbose) {
+        LogLine("  verbose: ON -- replies are echoed to the console (max %d bytes); "
+                "the log file always gets the full text", CONSOLE_REPLY_MAX);
+    }
 
     if (allowAllUsers) {
         LogLine("");
@@ -206,7 +275,7 @@ int wmain(int argc, wchar_t** argv) {
             FlushFileBuffers(srv);
 
             if (!ok) LogLine("write-back failed (client went away?)");
-            LogLine("%s -> status=%d", ac > 0 ? av[0] : "(empty)", res.status);
+            LogReply(ac > 0 ? av[0] : "(empty)", res.status, res.json);
         } else {
             LogLine("client disconnected before sending a complete request");
         }

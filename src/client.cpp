@@ -57,10 +57,16 @@ static const FileAction* FileActionFor(const char* action) {
 }
 
 // 统一输出一行失败结果。msg 里写自然文本即可，这里负责 JSON 转义。
-static int EmitFail(const char* code, const char* msg, int status) {
-    char esc[2048] = "";
-    wire::JsonEscapeAppend(esc, sizeof(esc), msg);
-    printf("RESULT {\"ok\":false,\"code\":\"%s\",\"msg\":%s}\n", code, esc);
+//
+// op 也要带上 —— 和服务端产生的失败结果保持同样的形状，
+// 免得调用方按 op 解析时拿到 nil。
+static int EmitFail(const char* op, const char* code, const char* msg, int status) {
+    char opEsc[128]   = "";
+    char msgEsc[2048] = "";
+    wire::JsonEscapeAppend(opEsc,  sizeof(opEsc),  op  ? op  : "");
+    wire::JsonEscapeAppend(msgEsc, sizeof(msgEsc), msg ? msg : "");
+    printf("RESULT {\"ok\":false,\"op\":%s,\"code\":\"%s\",\"msg\":%s}\n",
+           opEsc, code, msgEsc);
     fflush(stdout);
     return status;
 }
@@ -88,12 +94,12 @@ static int ResolveOutput(std::vector<std::string>& args, const char* action) {
         args.push_back(fa->defaultName);
         idx = (int)args.size() - 1;
     } else if (idx >= (int)args.size()) {
-        return EmitFail("bad-arg", "--out needs a value", ST_USAGE);
+        return EmitFail(action, "bad-arg", "--out needs a value", ST_USAGE);
     }
 
     char abs[32768] = "";
     if (!PathResolveAbsolute(args[idx].c_str(), abs, sizeof(abs))) {
-        return EmitFail("bad-out",
+        return EmitFail(action, "bad-out",
                         "the --out path could not be resolved to an absolute path",
                         ST_USAGE);
     }
@@ -106,14 +112,14 @@ static int ResolveOutput(std::vector<std::string>& args, const char* action) {
         snprintf(msg, sizeof(msg),
                  "--out must end with %s (safety rule: this action must not overwrite "
                  "a file of another kind)", fa->ext);
-        return EmitFail("out-bad-extension", msg, ST_REFUSED);
+        return EmitFail(action, "out-bad-extension", msg, ST_REFUSED);
     }
 
     char why[512] = "";
     if (!PathProbeWritable(abs, why, sizeof(why))) {
         // 这里用 ST_REFUSED：这是"安全闸门拒绝了"，不是"参数写错了"，
         // 调用方据此决定要不要换个路径重试。
-        return EmitFail("out-not-writable", why, ST_REFUSED);
+        return EmitFail(action, "out-not-writable", why, ST_REFUSED);
     }
 
     args[idx] = abs;
@@ -150,7 +156,7 @@ int wmain(int argc, wchar_t** argv) {
     HANDLE h = wire::ConnectToServer(500);
     if (h == INVALID_HANDLE_VALUE) {
         // 这条信息是给 agent 看的，所以要说清"该怎么向用户求助"
-        rc = EmitFail("server-not-running",
+        rc = EmitFail(args[0].c_str(), "server-not-running",
                       "the cua server is not running. "
                       "ask the user to start bin\\cua_server.exe "
                       "(normal privileges, NOT as administrator).",
@@ -168,7 +174,8 @@ int wmain(int argc, wchar_t** argv) {
     int n = wire::EncodeArgv((int)ptrs.size(), ptrs.data(), req, sizeof(req));
     if (n < 0) {
         CloseHandle(h);
-        rc = EmitFail("request-too-long", "the argument list is too long", ST_USAGE);
+        rc = EmitFail(args[0].c_str(), "request-too-long",
+                      "the argument list is too long", ST_USAGE);
         WinRestoreConsole();
         return rc;
     }
@@ -176,7 +183,8 @@ int wmain(int argc, wchar_t** argv) {
     // 长度前缀定界 —— 内容里含换行也没问题（type --text 就可能是这样）
     if (!wire::SendFrame(h, req, n)) {
         CloseHandle(h);
-        rc = EmitFail("send-failed", "failed to write the request to the server", ST_SERVER);
+        rc = EmitFail(args[0].c_str(), "send-failed",
+                      "failed to write the request to the server", ST_SERVER);
         WinRestoreConsole();
         return rc;
     }
@@ -187,13 +195,15 @@ int wmain(int argc, wchar_t** argv) {
 
     if (wire::RecvLine(h, statusLine, sizeof(statusLine)) < 0) {
         CloseHandle(h);
-        rc = EmitFail("no-response", "the server closed the pipe without answering", ST_SERVER);
+        rc = EmitFail(args[0].c_str(), "no-response",
+                      "the server closed the pipe without answering", ST_SERVER);
         WinRestoreConsole();
         return rc;
     }
     if (wire::RecvLine(h, jsonLine, sizeof(jsonLine)) < 0) {
         CloseHandle(h);
-        rc = EmitFail("no-body", "the server sent a status but no result body", ST_SERVER);
+        rc = EmitFail(args[0].c_str(), "no-body",
+                      "the server sent a status but no result body", ST_SERVER);
         WinRestoreConsole();
         return rc;
     }
