@@ -133,7 +133,7 @@ static bool CheckOutPath(ActionResult* r, const char* op, const char* out) {
     }
     // 白名单：client 已经查过一次，这里再查一次（纵深防御 —— 万一有人绕过 client
     // 自己写了个管道客户端，也不该能毁掉非图片文件）
-    if (!PathHasPngExtension(out)) {
+    if (!PathHasExtension(out, ".png")) {
         FailJ(r, ST_REFUSED, op, "out-not-png", "--out must end with .png");
         return false;
     }

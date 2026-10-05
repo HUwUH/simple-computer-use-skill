@@ -54,6 +54,10 @@ void ActScroll(int argc, char** argv, ActionResult* r);
 void ActType(int argc, char** argv, ActionResult* r);
 void ActKey(int argc, char** argv, ActionResult* r);
 
+// act_misc.cpp
+void ActClipboard(int argc, char** argv, ActionResult* r);
+void ActReleaseAll(int argc, char** argv, ActionResult* r);
+
 // act_overlay.cpp —— 预备窗口（黄圈）
 //
 // 返回 true  = 通过，可以执行动作

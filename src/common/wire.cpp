@@ -437,4 +437,35 @@ void JsonEscapeAppend(char* out, int cap, const char* s) {
     out[n] = '\0';
 }
 
+// ===========================================================================
+// base64 解码
+// ===========================================================================
+static int B64Val(unsigned char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+int Base64Decode(const char* in, char* out, int cap) {
+    int n = 0, acc = 0, bits = 0;
+    for (const unsigned char* p = (const unsigned char*)in; p && *p; ++p) {
+        unsigned char c = *p;
+        if (c == '=') break;                                  // 补位，后面没内容了
+        if (c == '\n' || c == '\r' || c == ' ' || c == '\t') continue;
+        int v = B64Val(c);
+        if (v < 0) return -1;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            if (n >= cap) return -1;
+            out[n++] = (char)((acc >> bits) & 0xFF);
+        }
+    }
+    return n;
+}
+
 } // namespace wire

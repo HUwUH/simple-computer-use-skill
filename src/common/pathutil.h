@@ -32,12 +32,12 @@ bool PathResolveAbsolute(const char* path, char* out, int cap);
 // 返回 false 时，whyOut 里写入给 agent 看的原因（英文，一行）。
 bool PathProbeWritable(const char* path, char* whyOut, int whyCap);
 
-// 路径是否以 .png 结尾（不区分大小写）。
+// 路径是否以指定扩展名结尾（不区分大小写）。ext 要带点，例如 ".png"。
 //
 // 这是【安全白名单】，不是格式偏好：
 // 可写性探测只回答"能不能写"，不回答"该不该写"。没有这条，
 //     simple_cua.exe screenshot --out 设计计划.md
-// 会把 PNG 写进一个文档里，把文档毁掉。加上之后最坏情况只是覆盖另一个 png。
-bool PathHasPngExtension(const char* path);
+// 会把 PNG 写进一个文档里，把文档毁掉。加上之后最坏情况只是覆盖同类文件。
+bool PathHasExtension(const char* path, const char* ext);
 
 #endif // PATHUTIL_H

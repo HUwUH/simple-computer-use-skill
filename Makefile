@@ -30,9 +30,10 @@ ACTIONS = \
     src/actions/act_screen.cpp \
     src/actions/act_mouse.cpp \
     src/actions/act_overlay.cpp \
-    src/actions/act_kbd.cpp
+    src/actions/act_kbd.cpp \
+    src/actions/act_misc.cpp
 
-all: bin/simple_cua.exe bin/cua_server.exe
+all: bin/simple_cua.exe bin/cua_server.exe bin/cua_panic.exe
 
 bin/simple_cua.exe: src/client.cpp $(COMMON)
 	@if not exist bin mkdir bin
@@ -41,6 +42,12 @@ bin/simple_cua.exe: src/client.cpp $(COMMON)
 bin/cua_server.exe: src/server.cpp $(ACTIONS) $(COMMON)
 	@if not exist bin mkdir bin
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS_SRV)
+
+# 救火程序。故意保持极简：只依赖 winutil，不碰管道、不碰任何配置。
+# 它必须由【人】用普通权限跑 —— 要杀一个 Medium 的进程，动手的也得是 Medium。
+bin/cua_panic.exe: src/panic.cpp src/common/winutil.cpp
+	@if not exist bin mkdir bin
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS)
 
 clean:
 	del /Q bin\*.exe

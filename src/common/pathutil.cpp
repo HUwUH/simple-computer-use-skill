@@ -30,15 +30,22 @@ bool PathResolveAbsolute(const char* path, char* out, int cap) {
     return true;
 }
 
-bool PathHasPngExtension(const char* path) {
-    if (!path) return false;
-    size_t n = strlen(path);
-    if (n < 4) return false;
-    const char* e = path + n - 4;
-    return e[0] == '.' &&
-           (e[1] == 'p' || e[1] == 'P') &&
-           (e[2] == 'n' || e[2] == 'N') &&
-           (e[3] == 'g' || e[3] == 'G');
+bool PathHasExtension(const char* path, const char* ext) {
+    if (!path || !ext || ext[0] != '.') return false;
+
+    size_t np = strlen(path);
+    size_t ne = strlen(ext);
+    if (np < ne) return false;
+
+    const char* tail = path + np - ne;
+    for (size_t i = 0; i < ne; ++i) {
+        char a = tail[i];
+        char b = ext[i];
+        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+        if (a != b) return false;
+    }
+    return true;
 }
 
 bool PathProbeWritable(const char* path, char* whyOut, int whyCap) {

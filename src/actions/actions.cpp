@@ -48,5 +48,7 @@ void DispatchAction(int argc, char** argv, ActionResult* res) {
     else if (!strcmp(op, "scroll"))     ActScroll(argc, argv, res);
     else if (!strcmp(op, "type"))       ActType(argc, argv, res);
     else if (!strcmp(op, "key"))        ActKey(argc, argv, res);
+    else if (!strcmp(op, "clipboard"))   ActClipboard(argc, argv, res);
+    else if (!strcmp(op, "release_all")) ActReleaseAll(argc, argv, res);
     else FailJ(res, ST_USAGE, op, "unknown-action", "unknown action");
 }

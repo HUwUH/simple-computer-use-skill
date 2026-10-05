@@ -24,20 +24,34 @@
 #include <vector>
 
 // ---------------------------------------------------------------------------
-// 哪些动作会写文件，以及不给 --out 时的默认文件名
+// 哪些动作会写文件，以及对应的规则
+//
+//   defaultName —— 不给 --out 时注入的默认文件名。
+//                  NULL = 不主动注入（clipboard 只有 get 用得上 --out，
+//                  set / clear 不需要）
+//   ext         —— 允许的扩展名。这是【安全白名单】：可写性探测只回答
+//                  "能不能写"，不回答"该不该写"。没有它，--out 指到设计稿上
+//                  就会把稿子毁掉。
 //
 // 路径策略是 client 的职责：
 //   * 只有 client 知道"自己被调用时的 cwd"是什么（server 是常驻进程，它不知道）
 //   * 只有 client 的令牌能做那个保守的可写性探测
 // ---------------------------------------------------------------------------
-static const struct { const char* action; const char* defaultName; } kFileActions[] = {
-    { "screenshot", "scua-screenshot.png" },
-    { "zoom",       "scua-zoom.png"       },
+struct FileAction {
+    const char* action;
+    const char* defaultName;
+    const char* ext;
 };
 
-static const char* DefaultNameFor(const char* action) {
+static const FileAction kFileActions[] = {
+    { "screenshot", "scua-screenshot.png", ".png" },
+    { "zoom",       "scua-zoom.png",       ".png" },
+    { "clipboard",  NULL,                  ".txt" },
+};
+
+static const FileAction* FileActionFor(const char* action) {
     for (size_t i = 0; i < sizeof(kFileActions) / sizeof(kFileActions[0]); ++i) {
-        if (!strcmp(kFileActions[i].action, action)) return kFileActions[i].defaultName;
+        if (!strcmp(kFileActions[i].action, action)) return &kFileActions[i];
     }
     return NULL;
 }
@@ -57,8 +71,8 @@ static int EmitFail(const char* code, const char* msg, int status) {
 // 返回 0 = 通过；非 0 = 已经输出过错误，直接拿它当退出码。
 // ---------------------------------------------------------------------------
 static int ResolveOutput(std::vector<std::string>& args, const char* action) {
-    const char* def = DefaultNameFor(action);
-    if (!def) return 0;                 // 这个动作不写文件
+    const FileAction* fa = FileActionFor(action);
+    if (!fa) return 0;                  // 这个动作不写文件
 
     // args[0] 是动作名，所以从 1 开始找
     int idx = -1;
@@ -67,9 +81,11 @@ static int ResolveOutput(std::vector<std::string>& args, const char* action) {
     }
 
     if (idx < 0) {
-        // 没给 --out -> 用默认名（落在 client 的 cwd）
+        // 没给 --out。有默认名的就注入一个（落在 client 的 cwd）；
+        // 没有默认名的（clipboard）就什么都不做。
+        if (!fa->defaultName) return 0;
         args.push_back("--out");
-        args.push_back(def);
+        args.push_back(fa->defaultName);
         idx = (int)args.size() - 1;
     } else if (idx >= (int)args.size()) {
         return EmitFail("bad-arg", "--out needs a value", ST_USAGE);
@@ -82,14 +98,15 @@ static int ResolveOutput(std::vector<std::string>& args, const char* action) {
                         ST_USAGE);
     }
 
-    // 安全白名单：必须以 .png 结尾。
+    // 安全白名单：扩展名必须是这个动作该产出的那种。
     // 探测只回答"能不能写"，不回答"该不该写" —— 没有这条，
     // `--out 设计计划.md` 会把 PNG 写进文档里，把文档毁掉。
-    if (!PathHasPngExtension(abs)) {
-        return EmitFail("out-not-png",
-                        "--out must end with .png (safety rule: a screenshot must not "
-                        "overwrite a non-image file)",
-                        ST_REFUSED);
+    if (!PathHasExtension(abs, fa->ext)) {
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 "--out must end with %s (safety rule: this action must not overwrite "
+                 "a file of another kind)", fa->ext);
+        return EmitFail("out-bad-extension", msg, ST_REFUSED);
     }
 
     char why[512] = "";

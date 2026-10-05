@@ -131,12 +131,6 @@ bool WinGetClipRect(RECT* out) {
 // ===========================================================================
 struct VkName { UINT vk; const char* name; };
 
-static const VkName kMouseButtons[] = {
-    { VK_LBUTTON, "mouse-left"   },
-    { VK_RBUTTON, "mouse-right"  },
-    { VK_MBUTTON, "mouse-middle" },
-};
-
 static const VkName kSpecialKeys[] = {
     { VK_BACK,    "backspace" }, { VK_TAB,     "tab"       },
     { VK_RETURN,  "enter"     }, { VK_ESCAPE,  "esc"       },
@@ -150,42 +144,72 @@ static const VkName kSpecialKeys[] = {
     { VK_LMENU,   "alt"       },
 };
 
+void WinVkName(WORD vk, char* out, int cap) {
+    if (!out || cap <= 0) return;
+    out[0] = '\0';
+
+    for (size_t i = 0; i < sizeof(kSpecialKeys) / sizeof(kSpecialKeys[0]); ++i) {
+        if (kSpecialKeys[i].vk == vk) {
+            strncpy(out, kSpecialKeys[i].name, cap - 1);
+            out[cap - 1] = '\0';
+            return;
+        }
+    }
+    if (vk >= 'A' && vk <= 'Z') { out[0] = (char)(vk + 32); out[1] = '\0'; return; }
+    if (vk >= '0' && vk <= '9') { out[0] = (char)vk;        out[1] = '\0'; return; }
+    if (vk >= VK_F1 && vk <= VK_F24) {
+        snprintf(out, cap, "f%u", (unsigned)(vk - VK_F1 + 1));
+        return;
+    }
+    snprintf(out, cap, "vk-0x%02X", (unsigned)vk);
+}
+
+// 遍历虚拟键码，用 GetAsyncKeyState 的高位判断"当前是否按下"。
+// 约 250 次调用，开销可忽略。
+//
+// 注意：用 KEYEVENTF_UNICODE 打出去的字符不产生虚拟键，所以不会出现在这里 ——
+//       这没关系，我们只关心按住类按键和鼠标按钮。
+int WinGetHeldKeys(WORD* outVks, int cap) {
+    if (!outVks || cap <= 0) return 0;
+
+    int n = 0;
+    for (UINT vk = 0x08; vk <= 0xFE && n < cap; ++vk) {
+        // VK_LBUTTON..VK_XBUTTON2 是鼠标按钮，由 WinGetHeldMouse 单独处理
+        if (vk >= 0x01 && vk <= 0x06) continue;
+        if (GetAsyncKeyState((int)vk) & 0x8000) outVks[n++] = (WORD)vk;
+    }
+    return n;
+}
+
+void WinGetHeldMouse(bool* left, bool* right, bool* middle) {
+    if (left)   *left   = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    if (right)  *right  = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+    if (middle) *middle = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
+}
+
 static void Append(char* out, int cap, const char* s) {
     if (!out || cap <= 0) return;
     if (out[0]) strncat(out, ",", cap - (int)strlen(out) - 1);
     strncat(out, s, cap - (int)strlen(out) - 1);
 }
 
-static void AppendVk(char* out, int cap, UINT vk) {
-    for (size_t i = 0; i < sizeof(kSpecialKeys) / sizeof(kSpecialKeys[0]); ++i) {
-        if (kSpecialKeys[i].vk == vk) { Append(out, cap, kSpecialKeys[i].name); return; }
-    }
-    if (vk >= 'A' && vk <= 'Z') { char b[4] = { (char)(vk + 32), 0, 0, 0 }; Append(out, cap, b); return; }
-    if (vk >= '0' && vk <= '9') { char b[4] = { (char)vk, 0, 0, 0 }; Append(out, cap, b); return; }
-    if (vk >= VK_F1 && vk <= VK_F24) {
-        char b[8];
-        sprintf(b, "f%u", (unsigned)(vk - VK_F1 + 1));
-        Append(out, cap, b);
-        return;
-    }
-    char b[16];
-    sprintf(b, "vk-0x%02X", (unsigned)vk);
-    Append(out, cap, b);
-}
-
 bool WinGetHeldInput(char* out, int cap) {
     if (!out || cap <= 0) return false;
     out[0] = '\0';
 
-    for (size_t i = 0; i < sizeof(kMouseButtons) / sizeof(kMouseButtons[0]); ++i) {
-        if (GetAsyncKeyState((int)kMouseButtons[i].vk) & 0x8000) {
-            Append(out, cap, kMouseButtons[i].name);
-        }
+    bool l = false, r = false, m = false;
+    WinGetHeldMouse(&l, &r, &m);
+    if (l) Append(out, cap, "mouse-left");
+    if (r) Append(out, cap, "mouse-right");
+    if (m) Append(out, cap, "mouse-middle");
+
+    WORD vks[128];
+    int  n = WinGetHeldKeys(vks, 128);
+    for (int i = 0; i < n; ++i) {
+        char name[32];
+        WinVkName(vks[i], name, sizeof(name));
+        Append(out, cap, name);
     }
-    for (UINT vk = 0x08; vk <= 0xFE; ++vk) {
-        // VK_LBUTTON..VK_XBUTTON2 已经单独处理过，跳过
-        if (vk >= 0x01 && vk <= 0x06) continue;
-        if (GetAsyncKeyState((int)vk) & 0x8000) AppendVk(out, cap, vk);
-    }
+
     return out[0] != '\0';
 }

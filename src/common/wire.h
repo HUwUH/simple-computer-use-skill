@@ -156,6 +156,13 @@ int DecodeArgv(char* buffer, int len, char** argv, int maxArgc);
 // 把字符串按 JSON 规则转义后追加到 out，包含两端的引号。
 void JsonEscapeAppend(char* out, int cap, const char* s);
 
+// ---------------------------------------------------------------------------
+// base64 解码（给 --b64 参数用）
+//
+// 返回解出的字节数；-1 = 非法输入。允许中间夹换行/空白 —— 有些 base64 输出会折行。
+// ---------------------------------------------------------------------------
+int Base64Decode(const char* in, char* out, int cap);
+
 } // namespace wire
 
 #endif // WIRE_H
